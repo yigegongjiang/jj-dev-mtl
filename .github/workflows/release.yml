@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  APP_NAME: JJ-DEV-MTL
+  PROJECT: JJ-DEV-MTL.xcodeproj
+  TARGET: JJ-DEV-MTL
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag == MARKETING_VERSION
+        run: |
+          tag="${{ github.ref_name }}"
+          v=$(awk -F'=' '/^[[:space:]]*MARKETING_VERSION[[:space:]]*=/{gsub(/[[:space:]]/,"",$2); print $2}' Version.xcconfig)
+          [ -n "$v" ] || { echo "MARKETING_VERSION not found in Version.xcconfig"; exit 1; }
+          [ "v$v" = "$tag" ] || { echo "tag $tag != v$v"; exit 1; }
+
+      - name: Build universal .app (unsigned)
+        run: |
+          xcodebuild \
+            -project "$PROJECT" \
+            -target "$TARGET" \
+            -configuration Release \
+            -arch arm64 -arch x86_64 \
+            ONLY_ACTIVE_ARCH=NO \
+            SYMROOT="$PWD/build" \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            clean build
+
+      - name: Embed commit SHA into Info.plist
+        run: |
+          plist="build/Release/$APP_NAME.app/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Add :GitCommitSHA string ${GITHUB_SHA}" "$plist"
+          /usr/libexec/PlistBuddy -c "Print :GitCommitSHA" "$plist"
+
+      - name: Ad-hoc sign
+        run: |
+          app="build/Release/$APP_NAME.app"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+
+      - name: Package + checksum + metadata
+        run: |
+          mkdir -p dist
+          ditto -c -k --sequesterRsrc --keepParent "build/Release/$APP_NAME.app" "dist/$APP_NAME-macos.zip"
+          cd dist && shasum -a 256 "$APP_NAME-macos.zip" > checksums.txt && cat checksums.txt
+          printf '{"tag":"%s","sha":"%s"}\n' "${{ github.ref_name }}" "${GITHUB_SHA}" > release-metadata.json
+          cat release-metadata.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            dist/${{ env.APP_NAME }}-macos.zip
+            dist/checksums.txt
+            dist/release-metadata.json

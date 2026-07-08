@@ -22,6 +22,7 @@ xcuserdata/
 
 ## Build generated
 build/
+dist/
 DerivedData/
 *.hmap
 *.ipa

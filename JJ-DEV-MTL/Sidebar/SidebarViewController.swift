@@ -1,5 +1,13 @@
 import Cocoa
 
+// 侧栏行: 序号(替代图标, 提示按对应数字键选中) + 工具名
+final class ToolCellView: NSTableCellView {
+  let numberLabel = NSTextField(labelWithString: "")
+  override var backgroundStyle: NSView.BackgroundStyle {
+    didSet { numberLabel.textColor = backgroundStyle == .emphasized ? .white : .secondaryLabelColor }
+  }
+}
+
 final class SidebarViewController: NSViewController {
 
   var onSelectionChange: ((Tool) -> Void)?
@@ -7,6 +15,8 @@ final class SidebarViewController: NSViewController {
   private let tools = ToolCatalog.all
   private let tableView = NSTableView()
   private let scrollView = NSScrollView()
+
+  var toolCount: Int { tools.count }
 
   override func loadView() {
     let container = NSView()
@@ -47,6 +57,13 @@ final class SidebarViewController: NSViewController {
     guard tableView.selectedRow < 0, !tools.isEmpty else { return }
     tableView.selectRowIndexes(IndexSet(integer: 0), byExtendingSelection: false)
   }
+
+  // 数字键选中对应工具
+  func selectTool(at index: Int) {
+    guard tools.indices.contains(index) else { return }
+    tableView.selectRowIndexes(IndexSet(integer: index), byExtendingSelection: false)
+    tableView.scrollRowToVisible(index)
+  }
 }
 
 extension SidebarViewController: NSTableViewDataSource {
@@ -56,11 +73,9 @@ extension SidebarViewController: NSTableViewDataSource {
 extension SidebarViewController: NSTableViewDelegate {
   func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
     let identifier = NSUserInterfaceItemIdentifier("SidebarRow")
-    let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView ?? Self.makeCell(identifier: identifier)
-    let tool = tools[row]
-    cell.textField?.stringValue = tool.title
-    cell.imageView?.image = NSImage(systemSymbolName: tool.symbolName, accessibilityDescription: nil)
-    cell.imageView?.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+    let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? ToolCellView ?? Self.makeCell(identifier: identifier)
+    cell.textField?.stringValue = tools[row].title
+    cell.numberLabel.stringValue = "\(row + 1)"
     return cell
   }
 
@@ -70,16 +85,16 @@ extension SidebarViewController: NSTableViewDelegate {
     onSelectionChange?(tools[row])
   }
 
-  private static func makeCell(identifier: NSUserInterfaceItemIdentifier) -> NSTableCellView {
-    let cell = NSTableCellView()
+  private static func makeCell(identifier: NSUserInterfaceItemIdentifier) -> ToolCellView {
+    let cell = ToolCellView()
     cell.identifier = identifier
 
-    let icon = NSImageView()
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    icon.imageScaling = .scaleProportionallyDown
-    icon.contentTintColor = .secondaryLabelColor
-    cell.imageView = icon
-    cell.addSubview(icon)
+    let number = cell.numberLabel
+    number.translatesAutoresizingMaskIntoConstraints = false
+    number.alignment = .center
+    number.font = .monospacedDigitSystemFont(ofSize: 12, weight: .semibold)
+    number.textColor = .secondaryLabelColor
+    cell.addSubview(number)
 
     let label = NSTextField(labelWithString: "")
     label.translatesAutoresizingMaskIntoConstraints = false
@@ -89,12 +104,11 @@ extension SidebarViewController: NSTableViewDelegate {
     cell.addSubview(label)
 
     NSLayoutConstraint.activate([
-      icon.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 8),
-      icon.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
-      icon.widthAnchor.constraint(equalToConstant: 18),
-      icon.heightAnchor.constraint(equalToConstant: 18),
+      number.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 6),
+      number.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
+      number.widthAnchor.constraint(equalToConstant: 18),
 
-      label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 8),
+      label.leadingAnchor.constraint(equalTo: number.trailingAnchor, constant: 8),
       label.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -8),
       label.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
     ])

@@ -11,6 +11,22 @@
 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [SemVer](https://semver.org/).
 
+## [0.2.0] - 2026-07-08
+
+### Added
+
+- 结果语法染色; Format JSON 主动探查: 从含噪 / 被转义 / 多重转义文本 (日志 / 代码围栏 / JSONP) 中自动提取并解析 JSON.
+- 自动退出 (无操作达设定时长, 默认 5 min, Settings 可调) + 记住上次窗口大小; 多显示器下在鼠标所在屏幕打开.
+- 打开自动填入剪贴板; 输入内容按工具本地保存, 切换不丢失.
+
+### Changed
+
+- 全新可拖拽双栏界面 (分隔线双击复位 + 上下 / 左右切换); 侧栏默认折叠、数字键 1-9 直选工具; Multiline ⇄ Singleline 合并为单一工具.
+
+### Removed
+
+- 移除 Copy/Paste 按钮、Input/Result 标签与冗余标题 (键盘优先、空间留给输入输出); 结果可直接选中复制.
+
 ## [0.1.1] - 2026-07-08
 
 ### Added
@@ -30,5 +46,6 @@
 - 提供 `install.sh` 一行命令安装 (下载 → 校验 → 装入 `/Applications`).
 - Help 菜单 → Check for Updates… : 检测新版, 自动下载 + 替换 + 重启.
 
+[0.2.0]: https://github.com/yigegongjiang/jj-dev-mtl/releases/tag/v0.2.0
 [0.1.1]: https://github.com/yigegongjiang/jj-dev-mtl/releases/tag/v0.1.1
 [0.1.0]: https://github.com/yigegongjiang/jj-dev-mtl/releases/tag/v0.1.0

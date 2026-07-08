@@ -16,8 +16,8 @@
 AI 完成 build + launch, app 启动后交人类肉眼验证 UI / 行为.
 
 ```bash
-xcodebuild -project JJ-DEV-MTL.xcodeproj -scheme JJ-DEV-MTL -configuration Debug -derivedDataPath build build   # 编译
-open build/Build/Products/Debug/JJ-DEV-MTL.app                                                                    # 启动
+xcodebuild -project JJ-DEV-MTL.xcodeproj -scheme JJ-DEV-MTL -configuration Debug -derivedDataPath build build       # 编译
+open build/Build/Products/Debug/JJ-DEV-MTL-dev.app                                                                  # 启动
 ```
 
 # 发布

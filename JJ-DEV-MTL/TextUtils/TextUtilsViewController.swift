@@ -1,7 +1,8 @@
 import Cocoa
 
-// 三个 text-utils 工具的共享 UI 骨架: 标题 + 输入 + 结果 + 复制 / 粘贴按钮 + 错误提示
-class TextUtilsViewController: NSViewController, NSTextViewDelegate {
+// text-utils 工具共享 UI: 标题 + 方向切换按钮 + (可选)工具级附加控件 + 可拖拽 split (输入/结果) + 错误提示.
+// 无 Input/Result 标签, 无 Copy/Paste 按钮 (面向键盘用户: 结果可选中直接 ⌘C); 出现时自动探查剪贴板填入输入.
+class TextUtilsViewController: NSViewController, NSTextViewDelegate, NSSplitViewDelegate {
 
   private let tool: Tool
   private let placeholder: String
@@ -9,11 +10,15 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate {
 
   private var inputTextView: NSTextView!
   private var resultTextView: NSTextView!
-  private var errorLabel: NSTextField!
-  private var copyButton: NSButton!
-  private var pasteButton: NSButton!
-  private var toastLabel: NSTextField!
-  private var toastFadeItem: DispatchWorkItem?
+
+  private var ioSplit: IOSplitView!
+  private var orientationButton: NSButton!
+  private var didLayoutOnce = false
+  private var didAutofill = false
+
+  static let resultFont = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+  private static let orientationKey = "JJDEVMTL.IOSplit.vertical"  // true = 左右, false = 上下
+  private static let minPaneSize: CGFloat = 120
 
   init(tool: Tool, placeholder: String, resultDefaultText: String) {
     self.tool = tool
@@ -29,202 +34,188 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate {
     return ("", nil)
   }
 
+  // 子类覆盖: 结果染色; 默认纯文本
+  func highlightResult(_ result: String, font: NSFont) -> NSAttributedString {
+    SyntaxHighlighter.plain(result, font: font)
+  }
+
+  // 子类覆盖: 标题栏下方的工具级附加控件 (如方向切换); 默认无
+  func makeAccessory() -> NSView? { nil }
+
+  // 供子类在附加控件变化后刷新结果
+  func reloadResult() { refresh() }
+
   override func loadView() {
     let container = NSView()
     container.translatesAutoresizingMaskIntoConstraints = false
 
-    let icon = NSImageView()
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    icon.image = NSImage(systemSymbolName: tool.symbolName, accessibilityDescription: nil)
-    icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 20, weight: .semibold)
-    icon.contentTintColor = .secondaryLabelColor
+    orientationButton = NSButton(title: "", target: self, action: #selector(toggleOrientation))
+    orientationButton.bezelStyle = .texturedRounded
+    orientationButton.imagePosition = .imageOnly
+    orientationButton.translatesAutoresizingMaskIntoConstraints = false
+    orientationButton.setContentHuggingPriority(.required, for: .horizontal)
 
-    let title = NSTextField(labelWithString: tool.title)
-    title.font = .systemFont(ofSize: 20, weight: .semibold)
-
-    let header = NSStackView(views: [icon, title])
-    header.orientation = .horizontal
-    header.spacing = 10
-    header.alignment = .centerY
-    header.translatesAutoresizingMaskIntoConstraints = false
-
-    let divider = NSBox()
-    divider.boxType = .separator
-    divider.translatesAutoresizingMaskIntoConstraints = false
-
-    let inputLabel = Self.makeSectionLabel("Input")
+    // 输入 / 结果: 无标签, 滚动文本区直接入 split
     let inputScroll = Self.makeScrollableTextView(editable: true, placeholder: placeholder)
     inputTextView = inputScroll.documentView as? NSTextView
     inputTextView.delegate = self
+    // 恢复上次内容; 无则主动填入剪贴板 (在 loadView 中执行, 不依赖 appearance 时序)
+    if let saved = UserDefaults.standard.string(forKey: inputStorageKey), !saved.isEmpty {
+      inputTextView.string = saved
+    } else if let clip = NSPasteboard.general.string(forType: .string),
+      !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      inputTextView.string = clip
+    }
 
-    errorLabel = NSTextField(labelWithString: "")
-    errorLabel.font = .systemFont(ofSize: 12)
-    errorLabel.textColor = .systemRed
-    errorLabel.isBezeled = false
-    errorLabel.drawsBackground = false
-    errorLabel.isEditable = false
-    errorLabel.isSelectable = false
-    errorLabel.lineBreakMode = .byWordWrapping
-    errorLabel.translatesAutoresizingMaskIntoConstraints = false
-    errorLabel.maximumNumberOfLines = 0
-
-    let resultLabel = Self.makeSectionLabel("Result")
     let resultScroll = Self.makeScrollableTextView(editable: false, placeholder: nil)
     resultTextView = resultScroll.documentView as? NSTextView
-    resultTextView.string = resultDefaultText
-    resultTextView.textColor = .secondaryLabelColor
+    resultTextView.isRichText = true       // 承载语法染色
+    resultTextView.isSelectable = true     // 键盘用户直接 ⌘C 复制
 
-    copyButton = NSButton(title: "Copy to Clipboard", target: self, action: #selector(copyResult))
-    copyButton.bezelStyle = .rounded
-    copyButton.translatesAutoresizingMaskIntoConstraints = false
-    copyButton.keyEquivalent = "\r"
+    ioSplit = IOSplitView()
+    ioSplit.translatesAutoresizingMaskIntoConstraints = false
+    ioSplit.isVertical = UserDefaults.standard.bool(forKey: Self.orientationKey)
+    ioSplit.delegate = self
+    ioSplit.onDividerDoubleClick = { [weak self] in self?.centerDivider() }
+    ioSplit.addArrangedSubview(Self.makePane(inputScroll))
+    ioSplit.addArrangedSubview(Self.makePane(resultScroll))
+    updateOrientationButton()
 
-    pasteButton = NSButton(title: "Paste to Active App", target: self, action: #selector(pasteResult))
-    pasteButton.bezelStyle = .rounded
-    pasteButton.translatesAutoresizingMaskIntoConstraints = false
+    let accessory = makeAccessory()
+    accessory?.translatesAutoresizingMaskIntoConstraints = false
 
-    toastLabel = NSTextField(labelWithString: "")
-    toastLabel.font = .systemFont(ofSize: 12)
-    toastLabel.textColor = .systemGreen
-    toastLabel.isBezeled = false
-    toastLabel.drawsBackground = false
-    toastLabel.isEditable = false
-    toastLabel.isSelectable = false
-    toastLabel.translatesAutoresizingMaskIntoConstraints = false
+    var subviews: [NSView] = [orientationButton, ioSplit]
+    if let accessory { subviews.append(accessory) }
+    for v in subviews { container.addSubview(v) }
 
-    let buttons = NSStackView()
-    buttons.orientation = .horizontal
-    buttons.spacing = 10
-    buttons.alignment = .centerY
-    buttons.translatesAutoresizingMaskIntoConstraints = false
-    buttons.addArrangedSubview(copyButton)
-    buttons.addArrangedSubview(pasteButton)
-    buttons.addArrangedSubview(toastLabel)
-
-    let allSubviews: [NSView] = [header, divider, inputLabel, inputScroll, errorLabel, resultLabel, resultScroll, buttons]
-    for v in allSubviews { container.addSubview(v) }
-
+    // 顶部单行控制条: (可选)方向段控在左 + 布局切换按钮在右; 无冗余标题(侧栏已标识), 无分隔行
     NSLayoutConstraint.activate([
-      header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      header.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
-      header.topAnchor.constraint(equalTo: container.topAnchor, constant: 16),
+      orientationButton.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor, constant: 6),
+      orientationButton.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
 
-      divider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      divider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-      divider.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 12),
-      divider.heightAnchor.constraint(equalToConstant: 1),
-
-      inputLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      inputLabel.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 16),
-
-      inputScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      inputScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-      inputScroll.topAnchor.constraint(equalTo: inputLabel.bottomAnchor, constant: 6),
-      inputScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
-
-      errorLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      errorLabel.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-      errorLabel.topAnchor.constraint(equalTo: inputScroll.bottomAnchor, constant: 6),
-
-      resultLabel.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      resultLabel.topAnchor.constraint(equalTo: errorLabel.bottomAnchor, constant: 12),
-
-      resultScroll.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      resultScroll.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -20),
-      resultScroll.topAnchor.constraint(equalTo: resultLabel.bottomAnchor, constant: 6),
-      resultScroll.heightAnchor.constraint(greaterThanOrEqualToConstant: 140),
-
-      buttons.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 20),
-      buttons.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -20),
-      buttons.topAnchor.constraint(equalTo: resultScroll.bottomAnchor, constant: 12),
-      buttons.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -20),
+      ioSplit.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+      ioSplit.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+      ioSplit.topAnchor.constraint(equalTo: orientationButton.bottomAnchor, constant: 8),
+      ioSplit.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -16),
     ])
+
+    if let accessory {
+      NSLayoutConstraint.activate([
+        accessory.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+        accessory.centerYAnchor.constraint(equalTo: orientationButton.centerYAnchor),
+        accessory.trailingAnchor.constraint(lessThanOrEqualTo: orientationButton.leadingAnchor, constant: -12),
+      ])
+    }
 
     self.view = container
     refresh()
   }
 
-  func textDidChange(_ notification: Notification) { refresh() }
+  override func viewDidLayout() {
+    super.viewDidLayout()
+    if !didLayoutOnce, ioSplit.bounds.width > 0, ioSplit.bounds.height > 0 {
+      didLayoutOnce = true
+      centerDivider()
+    }
+  }
+
+  override func viewDidAppear() {
+    super.viewDidAppear()
+    // 不自动聚焦输入框: 保证非编辑态下数字键可直接选工具; 需编辑时点击输入框即可
+    autofillFromClipboard()
+  }
+
+  // 主动探查剪贴板: 首次出现且输入为空时, 有字符串则自动填入
+  private func autofillFromClipboard() {
+    guard !didAutofill else { return }
+    didAutofill = true
+    guard inputTextView.string.isEmpty,
+      let clip = NSPasteboard.general.string(forType: .string),
+      !clip.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return }
+    inputTextView.string = clip
+    refresh()
+  }
+
+  // MARK: - 方向切换
+
+  @objc private func toggleOrientation() {
+    ioSplit.isVertical.toggle()
+    UserDefaults.standard.set(ioSplit.isVertical, forKey: Self.orientationKey)
+    updateOrientationButton()
+    ioSplit.adjustSubviews()
+    ioSplit.layoutSubtreeIfNeeded()
+    centerDivider()
+  }
+
+  private func updateOrientationButton() {
+    let symbol = ioSplit.isVertical ? "rectangle.split.1x2" : "rectangle.split.2x1"
+    orientationButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Toggle layout")
+    orientationButton.toolTip = ioSplit.isVertical ? "Switch to stacked layout" : "Switch to side-by-side layout"
+  }
+
+  private func centerDivider() {
+    let total = ioSplit.isVertical ? ioSplit.bounds.width : ioSplit.bounds.height
+    guard total > 0 else { return }
+    ioSplit.setPosition((total - ioSplit.dividerThickness) / 2, ofDividerAt: 0)
+  }
+
+  // MARK: - NSSplitViewDelegate (限制两侧 pane 最小尺寸)
+
+  func splitView(_ splitView: NSSplitView, constrainMinCoordinate proposedMin: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    proposedMin + Self.minPaneSize
+  }
+
+  func splitView(_ splitView: NSSplitView, constrainMaxCoordinate proposedMax: CGFloat, ofSubviewAt dividerIndex: Int) -> CGFloat {
+    proposedMax - Self.minPaneSize
+  }
+
+  // MARK: - 数据流
+
+  private var inputStorageKey: String { "JJDEVMTL.input.\(tool.id)" }
+
+  func textDidChange(_ notification: Notification) {
+    UserDefaults.standard.set(inputTextView.string, forKey: inputStorageKey)  // 持久化最新内容
+    refresh()
+  }
 
   private func refresh() {
     let input = inputTextView?.string ?? ""
     if input.isEmpty {
-      resultTextView.string = resultDefaultText
-      resultTextView.textColor = .secondaryLabelColor
-      errorLabel.stringValue = ""
-      copyButton.isEnabled = false
-      pasteButton.isEnabled = false
+      setResult(NSAttributedString(string: resultDefaultText, attributes: [
+        .font: Self.resultFont, .foregroundColor: NSColor.secondaryLabelColor,
+      ]))
       return
     }
     let (result, error) = transform(input)
     if let error {
-      errorLabel.stringValue = error
-      resultTextView.string = ""
-      copyButton.isEnabled = false
-      pasteButton.isEnabled = false
+      // 错误直接显示在结果区 (不占常驻行)
+      setResult(NSAttributedString(string: error, attributes: [
+        .font: Self.resultFont, .foregroundColor: NSColor.systemRed,
+      ]))
     } else {
-      errorLabel.stringValue = ""
-      resultTextView.string = result
-      resultTextView.textColor = .labelColor
-      let hasContent = !result.isEmpty
-      copyButton.isEnabled = hasContent
-      pasteButton.isEnabled = hasContent
+      setResult(highlightResult(result, font: Self.resultFont))
     }
   }
 
-  @objc private func copyResult() {
-    let text = resultTextView.string
-    guard !text.isEmpty else { return }
-    let pb = NSPasteboard.general
-    pb.clearContents()
-    pb.setString(text, forType: .string)
-    showToast("Copied")
+  private func setResult(_ attr: NSAttributedString) {
+    resultTextView.textStorage?.setAttributedString(attr)
   }
 
-  @objc private func pasteResult() {
-    let text = resultTextView.string
-    guard !text.isEmpty else { return }
-    let pb = NSPasteboard.general
-    pb.clearContents()
-    pb.setString(text, forType: .string)
-    NSApp.hide(nil)
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-      Self.simulateCommandV()
-    }
-    showToast("Pasted")
-  }
+  // MARK: - 构件
 
-  private func showToast(_ text: String) {
-    toastFadeItem?.cancel()
-    toastLabel.stringValue = text
-    toastLabel.alphaValue = 1
-    let item = DispatchWorkItem { [weak self] in
-      NSAnimationContext.runAnimationGroup { ctx in
-        ctx.duration = 0.35
-        self?.toastLabel.animator().alphaValue = 0
-      }
-    }
-    toastFadeItem = item
-    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: item)
-  }
-
-  private static func simulateCommandV() {
-    let src = CGEventSource(stateID: .combinedSessionState)
-    let vKey: CGKeyCode = 0x09
-    let down = CGEvent(keyboardEventSource: src, virtualKey: vKey, keyDown: true)
-    down?.flags = .maskCommand
-    let up = CGEvent(keyboardEventSource: src, virtualKey: vKey, keyDown: false)
-    up?.flags = .maskCommand
-    down?.post(tap: .cghidEventTap)
-    up?.post(tap: .cghidEventTap)
-  }
-
-  private static func makeSectionLabel(_ text: String) -> NSTextField {
-    let label = NSTextField(labelWithString: text)
-    label.font = .systemFont(ofSize: 12, weight: .medium)
-    label.textColor = .secondaryLabelColor
-    label.translatesAutoresizingMaskIntoConstraints = false
-    return label
+  // 一个 pane: 滚动文本区填满 (无标签)
+  private static func makePane(_ scroll: NSView) -> NSView {
+    let pane = NSView()
+    scroll.translatesAutoresizingMaskIntoConstraints = false
+    pane.addSubview(scroll)
+    NSLayoutConstraint.activate([
+      scroll.leadingAnchor.constraint(equalTo: pane.leadingAnchor),
+      scroll.trailingAnchor.constraint(equalTo: pane.trailingAnchor),
+      scroll.topAnchor.constraint(equalTo: pane.topAnchor),
+      scroll.bottomAnchor.constraint(equalTo: pane.bottomAnchor),
+    ])
+    return pane
   }
 
   private static func makeScrollableTextView(editable: Bool, placeholder: String?) -> NSScrollView {
@@ -260,31 +251,57 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate {
   }
 }
 
-final class MultilineToSinglelineViewController: TextUtilsViewController {
-  init(tool: Tool) {
-    super.init(
-      tool: tool,
-      placeholder: "Paste or type multi-line text here...",
-      resultDefaultText: "Enter text above to see the result"
-    )
-  }
-  required init?(coder: NSCoder) { fatalError() }
-  override func transform(_ input: String) -> (result: String, error: String?) {
-    return (TextUtilsCore.escapeToSingleline(input), nil)
-  }
-}
+// 互反工具合一: 单个小图标按钮翻转 多行→单行 / 单行→多行 (方向持久化)
+final class EscapeUnescapeViewController: TextUtilsViewController {
 
-final class SinglelineToMultilineViewController: TextUtilsViewController {
+  private var isUnescape = UserDefaults.standard.bool(forKey: "JJDEVMTL.escape.unescape")
+  private var dirButton: NSButton!
+
   init(tool: Tool) {
     super.init(
       tool: tool,
-      placeholder: "Paste text with escape sequences (e.g. Hello\\nWorld)...",
+      placeholder: "Paste or type text here...",
       resultDefaultText: "Enter text above to see the result"
     )
   }
   required init?(coder: NSCoder) { fatalError() }
+
+  override func makeAccessory() -> NSView? {
+    let b = NSButton(title: "", target: self, action: #selector(toggleDirection))
+    b.bezelStyle = .texturedRounded
+    b.imagePosition = .imageOnly
+    b.translatesAutoresizingMaskIntoConstraints = false
+    b.setContentHuggingPriority(.required, for: .horizontal)
+    dirButton = b
+    updateDirButton()
+    return b
+  }
+
+  @objc private func toggleDirection() {
+    isUnescape.toggle()
+    UserDefaults.standard.set(isUnescape, forKey: "JJDEVMTL.escape.unescape")
+    updateDirButton()
+    reloadResult()
+  }
+
+  private func updateDirButton() {
+    let symbol = isUnescape ? "arrow.left.to.line" : "arrow.right.to.line"
+    dirButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Toggle direction")
+    dirButton.toolTip = isUnescape
+      ? "Singleline → Multiline (click to switch)"
+      : "Multiline → Singleline (click to switch)"
+  }
+
   override func transform(_ input: String) -> (result: String, error: String?) {
-    return (TextUtilsCore.unescapeToMultiline(input), nil)
+    isUnescape
+      ? (TextUtilsCore.unescapeToMultiline(input), nil)
+      : (TextUtilsCore.escapeToSingleline(input), nil)
+  }
+
+  override func highlightResult(_ result: String, font: NSFont) -> NSAttributedString {
+    isUnescape
+      ? SyntaxHighlighter.plain(result, font: font)
+      : SyntaxHighlighter.escaped(result, font: font)
   }
 }
 
@@ -300,5 +317,8 @@ final class FormatJsonViewController: TextUtilsViewController {
   override func transform(_ input: String) -> (result: String, error: String?) {
     let r = TextUtilsCore.formatJson(input)
     return (r.result, r.error)
+  }
+  override func highlightResult(_ result: String, font: NSFont) -> NSAttributedString {
+    SyntaxHighlighter.json(result, font: font)
   }
 }

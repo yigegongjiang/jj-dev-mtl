@@ -196,4 +196,172 @@ final class TextUtilsCoreTests: XCTestCase {
     """
     XCTAssertEqual(r.result, expected)
   }
+
+  // MARK: - 复杂验收样例 (可直接 copy 到 App 对应工具的 Input 框验收)
+  //
+  // 说明: JSON 结果用 canonical() 独立规范化后逐字符比对 (与 TextUtilsCore.serialize 同款选项,
+  //       浮点/键序表示由 JSONSerialization 统一保证一致); 转义类用「往返不变式」与真实多行文本比对,
+  //       避免脆弱的手写转义期望值.
+
+  // --- Format JSON ---
+
+  // 富类型: 整数 / 浮点 / 负数 / 布尔 / null / 转义引号 / 内嵌 \n\t / URL / emoji(非 BMP) / 中日文
+  static let jsonRich = #"{"id":1024,"active":true,"deleted":false,"score":98.6,"balance":-42.5,"nickname":"José \"Pepe\" García","tags":["dev","ops","qa"],"profile":{"url":"https://example.com/u/1024?ref=home&x=1","avatar":null,"bio":"line1\nline2\tindented"},"roles":[{"name":"admin","level":9},{"name":"user","level":1}],"emoji":"🚀🔥中文日本語","empty":{}}"#
+
+  func testFormat_richPayload_matchesCanonical() {
+    let r = TextUtilsCore.formatJson(Self.jsonRich)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(Self.jsonRich))
+    XCTAssertFalse(r.result.contains("\\/"))  // 斜杠不转义
+    XCTAssertTrue(r.result.contains("🚀🔥"))   // emoji 原样保留
+  }
+
+  // 嵌套解包: webhook 的 payload 字段是一整段 JSON 字符串, 应被递归展开成对象
+  static let jsonWebhook = #"{"event":"order.created","ts":1699999999,"payload":"{\"orderId\":\"A-1001\",\"items\":[{\"sku\":\"X-9\",\"qty\":2},{\"sku\":\"Y-3\",\"qty\":1}],\"total\":59.9,\"paid\":true}"}"#
+
+  func testFormat_webhookNestedJsonString_unwrapped() {
+    let equivalent = #"{"event":"order.created","ts":1699999999,"payload":{"orderId":"A-1001","items":[{"sku":"X-9","qty":2},{"sku":"Y-3","qty":1}],"total":59.9,"paid":true}}"#
+    let r = TextUtilsCore.formatJson(Self.jsonWebhook)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // 兜底路径: 整段是被转义的日志行 (\"level\":... 而非 "level":...)
+  static let jsonEscapedLog = #"{\"level\":\"error\",\"service\":\"api-gateway\",\"code\":503,\"retry\":false,\"tags\":[\"net\",\"timeout\"],\"latency_ms\":1234.56}"#
+
+  func testFormat_escapedLogLine_fallbackUnwrapped() {
+    let equivalent = #"{"level":"error","service":"api-gateway","code":503,"retry":false,"tags":["net","timeout"],"latency_ms":1234.56}"#
+    let r = TextUtilsCore.formatJson(Self.jsonEscapedLog)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // --- Multiline -> Singleline ---
+
+  // 含换行 / tab / 双引号 / 反斜杠路径的真实代码片段
+  static let multilineText = """
+  SELECT id, name
+  \tFROM "users"
+  WHERE path = 'C:\\logs\\app.txt'
+  \tAND active = true
+  """
+
+  func testEscape_complexMultiline_isValidJsonStringAndRoundTrips() {
+    let out = TextUtilsCore.escapeToSingleline(Self.multilineText)
+    XCTAssertTrue(out.hasPrefix("\"") && out.hasSuffix("\""))
+    XCTAssertTrue(out.contains("\\n"))    // 换行已转义
+    XCTAssertTrue(out.contains("\\t"))    // tab 已转义
+    XCTAssertTrue(out.contains("\\\""))   // 双引号已转义
+    XCTAssertTrue(out.contains("\\\\"))   // 反斜杠已转义
+    XCTAssertFalse(out.contains("\n"))    // 结果为单行, 无真实换行
+    // 转义结果是合法 JSON 字符串字面量, 解析后应还原原文 (输入仅含 LF/TAB, 往返无损)
+    let parsed = try! JSONSerialization.jsonObject(
+      with: out.data(using: .utf8)!, options: [.fragmentsAllowed]) as? String
+    XCTAssertEqual(parsed, Self.multilineText)
+  }
+
+  // --- Singleline -> Multiline ---
+
+  // 单行转义日志 -> 还原多行 + tab + 反斜杠路径
+  static let escapedLogLine = #"[2026-07-08 10:30:00]\tERROR\tpath=C:\\Users\\app\\log.txt\nStack trace:\n\tat main()\n\tat run()"#
+
+  func testUnescape_complexLogLine_restoresMultiline() {
+    let expected = """
+    [2026-07-08 10:30:00]\tERROR\tpath=C:\\Users\\app\\log.txt
+    Stack trace:
+    \tat main()
+    \tat run()
+    """
+    XCTAssertEqual(TextUtilsCore.unescapeToMultiline(Self.escapedLogLine), expected)
+  }
+
+  // MARK: - 主动探查含噪输入 (可直接 copy 到 Format JSON 验收)
+
+  // 日志前后缀包裹
+  func testProbe_logPrefixAndSuffix_extracted() {
+    let equivalent = #"{"status":"ok","count":3,"cached":false}"#
+    let noisy = #"[2026-07-08] Response: {"status":"ok","count":3,"cached":false} <- 200 OK"#
+    let r = TextUtilsCore.formatJson(noisy)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // markdown 代码围栏包裹
+  func testProbe_markdownCodeFence_extracted() {
+    let equivalent = #"{"a":[1,2,3],"nested":{"x":true,"y":null}}"#
+    let noisy = """
+    这是返回结果:
+    ```json
+    {"a":[1,2,3],"nested":{"x":true,"y":null}}
+    ```
+    以上.
+    """
+    let r = TextUtilsCore.formatJson(noisy)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // JSONP / 函数调用包裹
+  func testProbe_jsonpWrapper_extracted() {
+    let equivalent = #"{"id":7,"active":true,"tags":["a","b"]}"#
+    let noisy = #"callback({"id":7,"active":true,"tags":["a","b"]});"#
+    let r = TextUtilsCore.formatJson(noisy)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // 多段 JSON: 取最长 (最可能是预期载荷), 字符串内的花括号不误判
+  func testProbe_multipleBlobs_longestWins_ignoresBracesInStrings() {
+    let equivalent = #"{"b":2,"c":3,"note":"has } and { inside"}"#
+    let noisy = #"first {"a":1} then {"b":2,"c":3,"note":"has } and { inside"} end"#
+    let r = TextUtilsCore.formatJson(noisy)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // 探查失败 (确无 JSON) 仍报错, 不误报
+  func testProbe_noJsonPresent_returnsError() {
+    let r = TextUtilsCore.formatJson("just some plain prose without any json payload")
+    XCTAssertTrue(r.result.isEmpty)
+    XCTAssertNotNil(r.error)
+  }
+
+  // 转义 JSON + 前后噪声叠加 (反转义后再抽取)
+  func testProbe_escapedJsonWithNoise_extracted() {
+    let equivalent = #"{"user":"bob","id":42,"roles":["a","b"]}"#
+    let noisy = #"log level=info payload={\"user\":\"bob\",\"id\":42,\"roles\":[\"a\",\"b\"]} status=ok"#
+    let r = TextUtilsCore.formatJson(noisy)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // 用户原始场景: 转义 JSON 被 Swift 源码 #"..."# 包裹一起粘贴
+  func testProbe_escapedJsonInSwiftWrapper_extracted() {
+    let equivalent = #"{"level":"error","code":503,"ok":false}"#
+    let wrapped = ##"static let jsonEscapedLog = #"{\"level\":\"error\",\"code\":503,\"ok\":false}"#"##
+    let r = TextUtilsCore.formatJson(wrapped)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // 多重转义 (\\\" -> \" -> ") 逐层还原
+  func testProbe_doublyEscapedJson_extracted() {
+    let equivalent = #"{"k":"v","n":5}"#
+    let doubly = #"{\\\"k\\\":\\\"v\\\",\\\"n\\\":5}"#
+    let r = TextUtilsCore.formatJson(doubly)
+    XCTAssertNil(r.error)
+    XCTAssertEqual(r.result, canonical(equivalent))
+  }
+
+  // MARK: - 辅助
+
+  // 独立规范化: 与 TextUtilsCore.serialize 同款 writing options, 用于比对格式化输出
+  private func canonical(_ json: String) -> String {
+    let data = json.data(using: .utf8)!
+    let obj = try! JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+    let out = try! JSONSerialization.data(
+      withJSONObject: obj,
+      options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes, .fragmentsAllowed])
+    return String(data: out, encoding: .utf8)!
+  }
 }

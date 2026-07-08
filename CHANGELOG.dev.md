@@ -7,6 +7,31 @@
 
 # Changelog (developer, follow [CHANGELOG.md](./CHANGELOG.md))
 
+## [0.2.0] - 2026-07-08
+
+### Added
+
+- 结果语法染色; Format JSON 主动探查: 从含噪 / 被转义 / 多重转义文本中自动提取并解析 JSON.
+  - `TextUtils/SyntaxHighlighter.swift`: UTF-16 token 扫描, JSON 键 / 值 / 数 / 关键字 / 标点 + 转义序列分色 (dynamic light/dark), 非 BMP 安全.
+  - `TextUtils/TextUtilsCore.swift` `formatJson`: 逐层 `jsonUnescape` 候选 + `probeLongestJSON` 平衡括号扫描 (跳过字符串 / 转义), 取最长可解析区段.
+- 自动退出 + 窗口 frame 记忆.
+  - `Settings/AutoQuitController.swift`: `NSEvent` 活动监听重置 `Timer`(.common mode), 到时 `NSApp.terminate`; 默认 5 min, 0 = Never.
+  - `Settings/SettingsViewController.swift`: `NSPopUpButton` 选时长写 UserDefaults; `Model/Tool.swift` 加 `settings` 入口, `Detail/DetailContainerViewController` 路由.
+  - `Window/MainWindowController.swift`: 手动持久化尺寸 (`windowDidResize`/`WillClose` → UserDefaults), 启动居中于鼠标所在屏幕; `isRestorable=false` + `shouldCascadeWindows=false` (setFrameAutosaveName 在 NSWindowController+状态恢复组合下不保存 resize).
+- 打开自动填入剪贴板; 输入按工具本地保存.
+  - `TextUtilsViewController.loadView`: UserDefaults `JJDEVMTL.input.<toolid>` 恢复, 空则读 `NSPasteboard`; `textDidChange` 写回.
+
+### Changed
+
+- 全新可拖拽双栏 + 侧栏折叠 + 数字键选工具; Multiline ⇄ Singleline 合并.
+  - `TextUtils/IOSplitView.swift`: 加粗分隔 + 握把 + 双击复位; `TextUtilsViewController` 顶部单行控制条 (方向 / 布局皆小图标按钮), 结果 `isSelectable`.
+  - `Window/MainSplitViewController.swift`: 侧栏默认 `isCollapsed`; `NSEvent` 数字键 (非编辑态) 选工具; `MainWindowController` 标题栏 accessory 放折叠按钮 (响应链 `toggleSidebar`).
+  - `Sidebar/SidebarViewController.swift`: 序号替代 SF Symbol (`ToolCellView` emphasized 变白); `Model/Tool.swift` 去 `symbolName` + 合并 escape/unescape 入口.
+
+### Removed
+
+- 移除 Copy/Paste 按钮、Input/Result 标签、冗余标题与错误常驻行 (错误改结果区红字).
+
 ## [0.1.1] - 2026-07-08
 
 ### Added

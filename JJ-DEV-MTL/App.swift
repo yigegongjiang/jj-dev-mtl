@@ -3,6 +3,7 @@ import Cocoa
 final class AppDelegate: NSObject, NSApplicationDelegate {
 
   private var mainWindowController: MainWindowController?
+  let autoQuit = AutoQuitController()
 
   func applicationDidFinishLaunching(_ notification: Notification) {
     NSApp.setActivationPolicy(.regular)
@@ -13,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     mainWindowController = wc
 
     NSApp.activate(ignoringOtherApps: true)
+    autoQuit.start()
   }
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }

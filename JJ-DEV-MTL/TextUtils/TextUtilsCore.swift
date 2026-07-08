@@ -48,24 +48,130 @@ enum TextUtilsCore {
     let error: String?
   }
 
-  // JSON 格式化 + 嵌套解包 (字符串值若为合法 JSON 则递归解析); 失败时若含 \" 兜底再包一层解析
+  // JSON 格式化 + 嵌套解包 + 主动探查含噪输入.
+  // 输入不可信, 预期值可能被前后冗余包裹, 逐级降级探查:
+  //   1. 直接解析
+  //   2. 整体是被转义的 JSON 串 ("{\"k\":\"v\"}")
+  //   3. 从含噪文本中取最长可解析的平衡 JSON 区段 (日志前后缀 / markdown 围栏 / JSONP / 赋值等)
+  //   4. 探查区段本身仍是被转义的
   nonisolated static func formatJson(_ text: String) -> FormatResult {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty {
       return FormatResult(result: "", error: "Empty input")
     }
-    do {
-      let unwrapped = try parseAndUnwrap(trimmed)
-      return FormatResult(result: try serialize(unwrapped), error: nil)
-    } catch let firstErr {
-      if trimmed.contains("\\\"") {
-        if let fallback = try? parseAndUnwrap("\"\(trimmed)\""),
-          let out = try? serialize(fallback) {
-          return FormatResult(result: out, error: nil)
-        }
+
+    var firstError: String?
+    func attempt(_ s: String) -> String? {
+      do {
+        return try serialize(parseAndUnwrap(s))
+      } catch {
+        if firstError == nil { firstError = (error as NSError).localizedDescription }
+        return nil
       }
-      return FormatResult(result: "", error: (firstErr as NSError).localizedDescription)
     }
+
+    // 逐层构造候选: 原文 + 逐次 JSON 反转义 (\" \\ \n … , 应对被转义 / 多重转义)
+    var variants = [trimmed]
+    var cur = trimmed
+    for _ in 0..<4 {
+      let de = jsonUnescape(cur)
+      if de == cur { break }
+      variants.append(de)
+      cur = de
+    }
+
+    // 每个候选: 先整体解析, 再从含噪文本抽取最长平衡 JSON 区段 (转义与噪声叠加也能命中)
+    for v in variants {
+      if let out = attempt(v) { return FormatResult(result: out, error: nil) }
+      if let cand = probeLongestJSON(in: v), let out = attempt(cand) {
+        return FormatResult(result: out, error: nil)
+      }
+    }
+
+    // 兜底: 整体是待包裹的转义 JSON 串
+    if trimmed.contains("\\\""), let out = attempt("\"\(trimmed)\"") {
+      return FormatResult(result: out, error: nil)
+    }
+
+    return FormatResult(result: "", error: firstError ?? "Invalid JSON")
+  }
+
+  // JSON 字符串反转义: 把 \" \\ \/ \n \t \r \b \f \uXXXX 还原, 未知转义保留反斜杠
+  private nonisolated static func jsonUnescape(_ s: String) -> String {
+    guard s.contains("\\") else { return s }
+    var out = ""
+    out.reserveCapacity(s.count)
+    let a = Array(s)
+    let n = a.count
+    var i = 0
+    while i < n {
+      guard a[i] == "\\", i + 1 < n else { out.append(a[i]); i += 1; continue }
+      switch a[i + 1] {
+      case "\"": out.append("\""); i += 2
+      case "\\": out.append("\\"); i += 2
+      case "/": out.append("/"); i += 2
+      case "n": out.append("\n"); i += 2
+      case "t": out.append("\t"); i += 2
+      case "r": out.append("\r"); i += 2
+      case "b": out.append("\u{08}"); i += 2
+      case "f": out.append("\u{0C}"); i += 2
+      case "u" where i + 5 < n:
+        if let code = UInt32(String(a[(i + 2)...(i + 5)]), radix: 16), let scalar = Unicode.Scalar(code) {
+          out.append(Character(scalar)); i += 6
+        } else { out.append(a[i]); i += 1 }
+      default: out.append(a[i]); i += 1
+      }
+    }
+    return out
+  }
+
+  // 平衡括号扫描: 收集所有可独立解析的顶层 { } / [ ] 区段, 返回最长者 (最可能是预期载荷)
+  private nonisolated static func probeLongestJSON(in raw: String) -> String? {
+    let chars = Array(raw)
+    let n = chars.count
+    var best: String?
+    var i = 0
+    while i < n {
+      let c = chars[i]
+      if c == "{" || c == "[", let end = matchBalanced(chars, from: i) {
+        let region = String(chars[i...end])
+        if (try? JSONSerialization.jsonObject(with: Data(region.utf8), options: [.fragmentsAllowed])) != nil {
+          if best == nil || region.count > best!.count { best = region }
+        }
+        i = end + 1
+        continue
+      }
+      i += 1
+    }
+    return best
+  }
+
+  // 从 start 处的开括号找到配平的闭括号下标; 正确跳过字符串字面量与其中的转义
+  private nonisolated static func matchBalanced(_ chars: [Character], from start: Int) -> Int? {
+    var depth = 0
+    var inString = false
+    var i = start
+    let n = chars.count
+    while i < n {
+      let c = chars[i]
+      if inString {
+        if c == "\\" { i += 2; continue }  // 跳过被转义字符
+        if c == "\"" { inString = false }
+        i += 1
+        continue
+      }
+      switch c {
+      case "\"": inString = true
+      case "{", "[": depth += 1
+      case "}", "]":
+        depth -= 1
+        if depth == 0 { return i }
+        if depth < 0 { return nil }
+      default: break
+      }
+      i += 1
+    }
+    return nil
   }
 
   private nonisolated static func parseAndUnwrap(_ s: String) throws -> Any {

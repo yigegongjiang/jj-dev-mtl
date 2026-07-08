@@ -15,10 +15,10 @@ final class DetailContainerViewController: NSViewController {
     switch tool.id {
     case "json-formatter":
       next = FormatJsonViewController(tool: tool)
-    case "text-multiline-to-singleline":
-      next = MultilineToSinglelineViewController(tool: tool)
-    case "text-singleline-to-multiline":
-      next = SinglelineToMultilineViewController(tool: tool)
+    case "text-escape-unescape":
+      next = EscapeUnescapeViewController(tool: tool)
+    case "settings":
+      next = SettingsViewController()
     default:
       next = ToolPlaceholderViewController(tool: tool)
     }

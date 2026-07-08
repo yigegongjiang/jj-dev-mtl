@@ -15,19 +15,8 @@ final class ToolPlaceholderViewController: NSViewController {
     let container = NSView()
     container.translatesAutoresizingMaskIntoConstraints = false
 
-    let icon = NSImageView()
-    icon.translatesAutoresizingMaskIntoConstraints = false
-    icon.image = NSImage(systemSymbolName: tool.symbolName, accessibilityDescription: nil)
-    icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
-    icon.contentTintColor = .secondaryLabelColor
-
-    let title = NSTextField(labelWithString: tool.title)
-    title.font = .systemFont(ofSize: 22, weight: .semibold)
-
-    let header = NSStackView(views: [icon, title])
-    header.orientation = .horizontal
-    header.spacing = 10
-    header.alignment = .centerY
+    let header = NSTextField(labelWithString: tool.title)
+    header.font = .systemFont(ofSize: 18, weight: .semibold)
     header.translatesAutoresizingMaskIntoConstraints = false
 
     let divider = NSBox()
@@ -44,18 +33,18 @@ final class ToolPlaceholderViewController: NSViewController {
     container.addSubview(placeholder)
 
     NSLayoutConstraint.activate([
-      header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-      header.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
-      header.topAnchor.constraint(equalTo: container.topAnchor, constant: 24),
+      header.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+      header.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -16),
+      header.topAnchor.constraint(equalTo: container.safeAreaLayoutGuide.topAnchor, constant: 12),
 
-      divider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-      divider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
-      divider.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 16),
+      divider.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+      divider.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -16),
+      divider.topAnchor.constraint(equalTo: header.bottomAnchor, constant: 10),
       divider.heightAnchor.constraint(equalToConstant: 1),
 
-      placeholder.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 24),
-      placeholder.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -24),
-      placeholder.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 24),
+      placeholder.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+      placeholder.trailingAnchor.constraint(lessThanOrEqualTo: container.trailingAnchor, constant: -16),
+      placeholder.topAnchor.constraint(equalTo: divider.bottomAnchor, constant: 16),
     ])
 
     self.view = container

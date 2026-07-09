@@ -54,8 +54,28 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate, NSSplitView
   // 子类覆盖: 标题栏下方的工具级附加控件 (如方向切换); 默认无
   func makeAccessory() -> NSView? { nil }
 
+  // 子类覆盖: 与结果文本区平级的覆盖视图 (铺满 result pane, 遮住 textView); 默认无.
+  // 用途: 提供替代视图 (如 JSON 树形展示), 通过 setResultOverlayHidden 切换显隐
+  func makeResultOverlay() -> NSView? { nil }
+
+  // 子类覆盖: refresh 完成 (含成功/错误) 后回调, 用于同步替代视图
+  func didRefreshResult(text: String, error: String?) {}
+
   // 供子类在附加控件变化后刷新结果
   func reloadResult() { refresh() }
+
+  // 供子类切换 result overlay 显隐 (显 = 遮住 textView; 隐 = 恢复文本视图)
+  func setResultOverlayHidden(_ hidden: Bool) {
+    resultOverlay?.isHidden = hidden
+  }
+
+  // 子类可读: 当前 overlay (供切按钮读取当前状态)
+  var isResultOverlayVisible: Bool {
+    guard let v = resultOverlay else { return false }
+    return !v.isHidden
+  }
+
+  private var resultOverlay: NSView?
 
   // tab 激活时调用: 输入为空则主动探查剪贴板填入 (打开即用; 复用 VC 下 loadView 只跑一次, 靠此每次切入探查)
   func activateInput() {
@@ -110,7 +130,30 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate, NSSplitView
     ioSplit.delegate = self
     ioSplit.onDividerDoubleClick = { [weak self] in self?.centerDivider() }
     ioSplit.addArrangedSubview(Self.makePane(inputScroll))
-    ioSplit.addArrangedSubview(Self.makePane(resultScroll))
+
+    // Result pane: textView 底, overlay (若子类提供) 覆盖其上, 初始 hidden
+    let resultPane = NSView()
+    resultScroll.translatesAutoresizingMaskIntoConstraints = false
+    resultPane.addSubview(resultScroll)
+    NSLayoutConstraint.activate([
+      resultScroll.leadingAnchor.constraint(equalTo: resultPane.leadingAnchor),
+      resultScroll.trailingAnchor.constraint(equalTo: resultPane.trailingAnchor),
+      resultScroll.topAnchor.constraint(equalTo: resultPane.topAnchor),
+      resultScroll.bottomAnchor.constraint(equalTo: resultPane.bottomAnchor),
+    ])
+    if let overlay = makeResultOverlay() {
+      overlay.translatesAutoresizingMaskIntoConstraints = false
+      overlay.isHidden = true
+      resultPane.addSubview(overlay)
+      NSLayoutConstraint.activate([
+        overlay.leadingAnchor.constraint(equalTo: resultPane.leadingAnchor),
+        overlay.trailingAnchor.constraint(equalTo: resultPane.trailingAnchor),
+        overlay.topAnchor.constraint(equalTo: resultPane.topAnchor),
+        overlay.bottomAnchor.constraint(equalTo: resultPane.bottomAnchor),
+      ])
+      resultOverlay = overlay
+    }
+    ioSplit.addArrangedSubview(resultPane)
     updateOrientationButton()
 
     accessoryView = makeAccessory()
@@ -247,6 +290,7 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate, NSSplitView
       setResult(NSAttributedString(string: resultDefaultText, attributes: [
         .font: Self.resultFont, .foregroundColor: NSColor.secondaryLabelColor,
       ]))
+      didRefreshResult(text: "", error: nil)
       return
     }
     let (result, error) = transform(input)
@@ -258,6 +302,7 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate, NSSplitView
     } else {
       setResult(highlightResult(result, font: Self.resultFont))
     }
+    didRefreshResult(text: result, error: error)
   }
 
   private func setResult(_ attr: NSAttributedString) {
@@ -290,6 +335,10 @@ class TextUtilsViewController: NSViewController, NSTextViewDelegate, NSSplitView
     scroll.drawsBackground = true
 
     let tv = NSTextView()
+    // 强制 TextKit 1 + 非连续布局: TextKit 2 绘制单条超长行 (如 minified JSON 的 3MB 单行) 时,
+    // 逐字符解析 rendering attributes 走 NSConcreteHashTable O(n²) rehash, 主线程冻结数秒 (sample 实测).
+    // 访问 layoutManager 触发 TextKit 2 -> 1 兼容回退; 非连续布局只排 / 绘可见区, 长行也流畅.
+    tv.layoutManager?.allowsNonContiguousLayout = true
     tv.isEditable = editable
     tv.isRichText = false
     tv.allowsUndo = editable
@@ -367,7 +416,22 @@ final class EscapeUnescapeViewController: TextUtilsViewController {
   }
 }
 
+// JSON 格式化: 文本模式 + 树形模式 (视图切换按钮上交 tab 栏 accessory).
+// 折叠状态: NSOutlineView 内建, 不持久化, 输入变即 reload.
+// 性能: text 模式下**不构建 tree** (懒构建, treeDirty 标记); 切到 tree 时才 rebuild.
 final class FormatJsonViewController: TextUtilsViewController {
+
+  private var treeView: JsonTreeView?
+  private var viewToggleButton: NSButton!
+  private var lastParsed: Any?  // transform 阶段缓存, 供 tree 构建时免二次解析
+  private var isTreeMode = false
+  private var treeDirty = true  // 表示 tree 内容与 lastParsed 是否一致 (输入变 -> true)
+
+  // text 模式渲染上限 (UTF-16 单位): 超出只染色渲染前缀预览, 全量走虚拟化树形视图.
+  // NSTextView 同步布局 rich text 的开销随字符数线性增长, 6MB 达数秒会冻结主线程;
+  // 512KB 前缀布局 < ~200ms (Release), 兼顾快照预览与响应性.
+  private static let textRenderLimit = 512 * 1024
+
   init(tool: Tool) {
     super.init(
       tool: tool,
@@ -376,11 +440,78 @@ final class FormatJsonViewController: TextUtilsViewController {
     )
   }
   required init?(coder: NSCoder) { fatalError() }
+
   override func transform(_ input: String) -> (result: String, error: String?) {
     let r = TextUtilsCore.formatJson(input)
+    lastParsed = r.parsed
     return (r.result, r.error)
   }
+
   override func highlightResult(_ result: String, font: NSFont) -> NSAttributedString {
-    SyntaxHighlighter.json(result, font: font)
+    let count = result.utf16.count
+    if count <= Self.textRenderLimit {
+      return SyntaxHighlighter.json(result, font: font)
+    }
+    // 超大输出: 截断前缀预览 + 顶部提示切树形 (避免 NSTextView 同步布局多 MB rich text 冻结)
+    let head = String(decoding: Array(result.utf16.prefix(Self.textRenderLimit)), as: UTF16.self)
+    let sizeMB = Double(result.utf8.count) / 1_048_576
+    let notice = String(
+      format: "// Output is large (%.1f MB). Text view shows the first %d KB only.\n// Click the tree-view button (top-right) to browse / expand the full data — the tree renders virtualized with no lag.\n\n",
+      sizeMB, Self.textRenderLimit / 1024)
+    let out = NSMutableAttributedString(string: notice, attributes: [
+      .font: font, .foregroundColor: NSColor.secondaryLabelColor,
+    ])
+    out.append(SyntaxHighlighter.json(head, font: font))
+    return out
+  }
+
+  override func makeResultOverlay() -> NSView? {
+    let v = JsonTreeView()
+    treeView = v
+    return v
+  }
+
+  override func makeAccessory() -> NSView? {
+    let b = NSButton(title: "", target: self, action: #selector(toggleViewMode))
+    b.bezelStyle = .texturedRounded
+    b.imagePosition = .imageOnly
+    b.translatesAutoresizingMaskIntoConstraints = false
+    b.setContentHuggingPriority(.required, for: .horizontal)
+    viewToggleButton = b
+    updateViewToggleButton()
+    return b
+  }
+
+  // 输入 / 结果变了 -> tree 数据过期; 若当前显示的是 tree 模式立刻 rebuild, 否则打标记等切模式再 rebuild
+  override func didRefreshResult(text: String, error: String?) {
+    treeDirty = true
+    if isTreeMode { rebuildTreeIfNeeded() }
+  }
+
+  private func rebuildTreeIfNeeded() {
+    guard treeDirty, let treeView else { return }
+    if let parsed = lastParsed {
+      treeView.setRoot(JsonNodeBuilder.build(from: parsed))
+    } else {
+      treeView.clear()
+    }
+    treeDirty = false
+  }
+
+  @objc private func toggleViewMode() {
+    isTreeMode.toggle()
+    if isTreeMode { rebuildTreeIfNeeded() }  // 懒构建: 切到 tree 时才构建过期数据
+    setResultOverlayHidden(!isTreeMode)
+    updateViewToggleButton()
+    if isTreeMode { treeView?.focusOutline() }
+  }
+
+  private func updateViewToggleButton() {
+    // 当前是文本 -> 显 tree 图标 (点击切到 tree); 当前是 tree -> 显 text 图标
+    let symbol = isTreeMode ? "text.alignleft" : "list.triangle"
+    viewToggleButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Toggle view mode")
+    viewToggleButton.toolTip = isTreeMode
+      ? "Switch to text view"
+      : "Switch to tree view (expand / collapse)"
   }
 }

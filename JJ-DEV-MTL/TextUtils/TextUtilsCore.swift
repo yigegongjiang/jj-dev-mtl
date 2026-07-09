@@ -46,6 +46,7 @@ enum TextUtilsCore {
   struct FormatResult {
     let result: String
     let error: String?
+    let parsed: Any?  // 成功时携带解析对象 (JSONSerialization 结果), 供树视图免二次解析
   }
 
   // JSON 格式化 + 嵌套解包 + 主动探查含噪输入.
@@ -57,13 +58,14 @@ enum TextUtilsCore {
   nonisolated static func formatJson(_ text: String) -> FormatResult {
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty {
-      return FormatResult(result: "", error: "Empty input")
+      return FormatResult(result: "", error: "Empty input", parsed: nil)
     }
 
     var firstError: String?
-    func attempt(_ s: String) -> String? {
+    func attempt(_ s: String) -> (text: String, parsed: Any)? {
       do {
-        return try serialize(parseAndUnwrap(s))
+        let obj = try parseAndUnwrap(s)
+        return (try serialize(obj), obj)
       } catch {
         if firstError == nil { firstError = (error as NSError).localizedDescription }
         return nil
@@ -82,18 +84,18 @@ enum TextUtilsCore {
 
     // 每个候选: 先整体解析, 再从含噪文本抽取最长平衡 JSON 区段 (转义与噪声叠加也能命中)
     for v in variants {
-      if let out = attempt(v) { return FormatResult(result: out, error: nil) }
+      if let out = attempt(v) { return FormatResult(result: out.text, error: nil, parsed: out.parsed) }
       if let cand = probeLongestJSON(in: v), let out = attempt(cand) {
-        return FormatResult(result: out, error: nil)
+        return FormatResult(result: out.text, error: nil, parsed: out.parsed)
       }
     }
 
     // 兜底: 整体是待包裹的转义 JSON 串
     if trimmed.contains("\\\""), let out = attempt("\"\(trimmed)\"") {
-      return FormatResult(result: out, error: nil)
+      return FormatResult(result: out.text, error: nil, parsed: out.parsed)
     }
 
-    return FormatResult(result: "", error: firstError ?? "Invalid JSON")
+    return FormatResult(result: "", error: firstError ?? "Invalid JSON", parsed: nil)
   }
 
   // JSON 字符串反转义: 把 \" \\ \/ \n \t \r \b \f \uXXXX 还原, 未知转义保留反斜杠

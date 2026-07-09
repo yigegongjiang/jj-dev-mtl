@@ -11,6 +11,16 @@
 
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) + [SemVer](https://semver.org/).
 
+## [0.3.1] - 2026-07-09
+
+### Added
+
+- Format JSON 新增树形视图: tab 栏右侧新按钮切换 文本 / 树形, 树中每个对象·数组可展开折叠 (点击三角或键盘 ← / →), 双击行也可切换, ⌘C 复制选中节点为标准 JSON. 树形为虚拟化渲染, 数十万节点的超大 JSON 也流畅.
+
+### Fixed
+
+- 修复粘贴超大 / 单行 (minified) JSON 时界面卡死: 输入框长行渲染优化 + 文本视图对超大输出仅显示前 512 KB 预览 (全量改用树形视图查看).
+
 ## [0.3.0] - 2026-07-08
 
 ### Added
@@ -60,6 +70,7 @@
 - 提供 `install.sh` 一行命令安装 (下载 → 校验 → 装入 `/Applications`).
 - Help 菜单 → Check for Updates… : 检测新版, 自动下载 + 替换 + 重启.
 
+[0.3.1]: https://github.com/yigegongjiang/jj-dev-mtl/releases/tag/v0.3.1
 [0.3.0]: https://github.com/yigegongjiang/jj-dev-mtl/releases/tag/v0.3.0
 [0.2.0]: https://github.com/yigegongjiang/jj-dev-mtl/releases/tag/v0.2.0
 [0.1.1]: https://github.com/yigegongjiang/jj-dev-mtl/releases/tag/v0.1.1

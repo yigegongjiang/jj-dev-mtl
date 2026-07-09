@@ -7,6 +7,21 @@
 
 # Changelog (developer, follow [CHANGELOG.md](./CHANGELOG.md))
 
+## [0.3.1] - 2026-07-09
+
+### Added
+
+- Format JSON 新增树形视图: tab 栏右侧新按钮切换 文本 / 树形, 树中每个对象·数组可展开折叠 (点击三角或键盘 ← / →), 双击行也可切换, ⌘C 复制选中节点为标准 JSON. 树形为虚拟化渲染, 数十万节点的超大 JSON 也流畅.
+  - `TextUtils/JsonTreeView.swift`: 新增. `JsonNode` (class, 引用相等) + `JsonNodeBuilder` (NSNumber/CFBoolean 分类, 对象 keys `.sorted()` 与文本 `.sortedKeys` 一致; `displayLine` 懒生成+缓存, 构树阶段零 NSAttributedString) + `JsonOutlineView` (拦 ⌘C → 单选序列化 raw, 多选包装数组 pretty JSON) + `JsonTreeView` (NSOutlineView 单列固定行高 + Cell 复用; 闭合括号虚拟节点负缩进对齐父行; 不监听 expand/collapse 通知避免 O(N²); 节点数 > 3000 只展根一层).
+  - `TextUtils/TextUtilsCore.swift` `FormatResult`: 新增 `parsed: Any?` 携带解析对象, 树视图免二次解析.
+  - `TextUtils/TextUtilsViewController.swift`: 基类新增 `makeResultOverlay()` / `didRefreshResult()` 可 override hook; loadView 时 overlay 铺满 result pane 覆盖 textView (初始 hidden); `FormatJsonViewController` 懒构树 (`treeDirty` 标记, text 模式不构树, 切 tree 才 rebuild), `makeAccessory` 视图切换按钮 (`list.triangle` ↔ `text.alignleft`).
+
+### Fixed
+
+- 修复粘贴超大 / 单行 (minified) JSON 界面卡死 (sample 实测: 3MB 单行 catalog 开屏主线程 100% CPU 持续冻结).
+  - 真凶: TextKit 2 绘制单条超长行时逐字符 `_resolvedRenderingAttributesForCharacterIndex` 走 `NSConcreteHashTable` O(N²) rehash. `TextUtils/TextUtilsViewController.swift` `makeScrollableTextView`: 访问 `layoutManager` 强制 TextKit 2 → 1 回退 + `allowsNonContiguousLayout = true`, 只排/绘可见区.
+  - `FormatJsonViewController.highlightResult`: 输出 > 512 KB 时只染色渲染前缀预览 + 顶部提示切树形, 避免 NSTextView 同步布局多 MB rich text (实测 6MB → 4.2s → 降至 ~0.4s).
+
 ## [0.3.0] - 2026-07-08
 
 ### Added
